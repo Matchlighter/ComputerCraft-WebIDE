@@ -1,12 +1,17 @@
 #!/usr/bin/python
-import os, json, re, shutil, sys
+import os, json, re, shutil, argparse
 from hashlib import md5
 from bottle import route, run, static_file, request, response, get, error, HTTPError, HTTPResponse
 from jinja2 import Environment, PackageLoader
 tenv = Environment(loader=PackageLoader(__name__, "templates"))
 
 aroot = os.path.dirname(__file__)
-ccdata_root = sys.argv[1]
+
+psr = argparse.ArgumentParser(description='Start ComputerCraft WebIDE')
+psr.add_argument('path', help='Path to computers directory')
+psr.add_argument('-l', help='Host and port to listen on e.g. 0.0.0.0:8000', default='0.0.0.0:8000', metavar='address:port')
+args = psr.parse_args()
+ccdata_root = args.path
 
 def abort(code, err=''):
 	if request.content_type == 'text/html':
@@ -216,4 +221,5 @@ def delete_file(comp_dir, ffl):
 def static_files(fl):
 	return static_file(fl, root=os.path.join(aroot, "static"))
 	
-run(host='0.0.0.0', port=8000, reloader=True)
+hp = re.match(r'(\d+\.\d+\.\d+\.\d+)?(?::(\d+))?', args.l)
+run(host=(hp.group(1) or '0.0.0.0'), port=(hp.group(2) or 8000), reloader=True)
