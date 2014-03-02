@@ -1,0 +1,442 @@
+<!DOCTYPE html>
+
+<html>
+<head>
+	<title>{% block title %}CC Lua Edit{% endblock %}</title>
+	{% block css %}
+	<link rel="stylesheet" href="/static/screen.css" />
+	<link rel="stylesheet" href="/static/jstree/themes/default/style.css" />
+	<link rel="stylesheet" href="/static/contextmenu/jquery.contextMenu.css" />
+	
+	<style>
+		{% block pageCss %}{% endblock %}
+	</style>
+	{% endblock %}
+
+	{% block js %}
+		<script type="text/javascript" src="/static/jquery-2.0.3.js"></script>
+		<script type="text/javascript" src="/static/hogan-2.0.0.js"></script>
+		<script type="text/javascript" src="/static/jstree/jstree.js"></script>
+		<script type="text/javascript" src="/static/ace/ace.js"></script>
+		<script type="text/javascript" src="/static/contextmenu/jquery.ui.position.js"></script>
+		<script type="text/javascript" src="/static/contextmenu/jquery.contextMenu.js"></script>
+	
+	<script type="text/javascript">
+		$(function () {
+		{% block loadedJS %}
+			var editor = ace.edit("editor");
+			editor.setTheme("ace/theme/monokai");
+			editor.setShowPrintMargin(false);
+			
+			var EditSession = require("ace/edit_session").EditSession;
+			var UndoManager = require("ace/undomanager").UndoManager;
+			
+			var currentFile = null;
+			var openFiles = {};
+			
+			var tabTemp = Hogan.compile($("#templates .tab").html());
+			
+			var password = prompt('Enter password:');
+			
+			function getReqData() {
+				return {'pw': password};
+			}
+			
+			function sendAuthedRequest(url, data, type, opts) {
+				if (data==null) data={};
+				if (opts==null) opts={};
+				var ropts = $.extend({
+					'type': type,
+					'data': $.extend(getReqData(), data),
+				}, opts);
+				$.ajax(url, ropts);
+			}
+			
+			function getPath(node) {
+				var path = tree.get_path(node, null, true);
+				var rpth = "";
+				for (i=0; i<path.length; i++) {
+					var $node = tree.get_node(path[i], true);
+					rpth = rpth + '/' + tree.get_node(path[i]).data.name; //$node.data('name');
+				}
+				return "/ajax/computer"+rpth;
+			}
+			
+			function resyncVTab(file) {
+				file.tab.find('.tab-title').text((file.dirty ? '*' : '')+file.name);
+			}
+			
+			function markDirty(file, dirty) {
+				file.dirty = dirty == null || dirty == true;
+				resyncVTab(file);
+			}
+			
+			function saveFile(file) {
+				if (file.dirty) {
+					sendAuthedRequest(getPath(file.tree_node), {
+						'file_data': editor.getValue(),
+						'type': 'file',
+					}, 'POST', {
+						'success': function (data, status, xhr) {
+							markDirty(file, false);
+						},
+						'error': function (data, status, err) {
+							console.log(data);
+							alert('Could not save file! ('+data.statusText+')');
+						},
+					});
+				}
+			}
+			
+			function closeFile(file, force) {
+				if (force || !file.dirty || confirm('The file has been changed. Are you sure you want to close it?')) {
+					delete openFiles[file.path];
+					
+					var keys = Object.keys(openFiles);
+					
+					if (keys.length == 0) {
+						currentFile = null;
+						$('#edit-box').addClass('empty');
+					} else if (currentFile == file) {
+						focusTab(openFiles[keys[keys.length-1]].tab);
+					}
+					file.tab.remove();
+				}
+			}
+			
+			function openFile(path, node) {
+				sendAuthedRequest(path, null, 'GET', {
+					'success': function (data) {
+						var sess = new EditSession(data, node.data.aceMode);
+						var udm = new UndoManager()
+						sess.setUndoManager(udm);
+						
+						var ofl = {
+							'name': path.split('/').pop(),
+							'path': path,
+							'session': sess,
+							'dirty': false,
+							'tree_node': node,
+						};
+						ofl.session.on('change', function(delta) {
+							markDirty(ofl);
+						});
+						
+						var tab = $(tabTemp.render({
+							'tabName': ofl.name,
+						}));
+						ofl.tab = tab;
+						
+						tab.on('click', function() {
+							focusTab(tab);
+						})
+						.data('file', path)
+						.data('name', ofl.name)
+						.find('.tab-close').on('click', function() {
+							closeFile(ofl, false);
+						});
+						
+						$("#tab-bar").append(tab);
+						
+						openFiles[path] = ofl;
+						focusTab(tab);
+					},
+					'error': function (xhr, stat, err) {
+						alert('Couldn\'t open '+ node.data.type +'! ('+xhr.responseText+')');
+					},
+				});
+			}
+			
+			function applyInfo(node, data) {
+				$.extend(true, node, data);
+				tree.redraw(true);
+			}
+			
+			function renameFile(node, newName, oldName) {
+				if (newName !== oldName) {
+					var oldPath = getPath(node);
+					sendAuthedRequest(oldPath, {
+						'type': node.data.type,
+						'newname': newName,
+						
+					}, 'POST', {
+						'success': function (rdata, status, xhr) {
+							applyInfo(node, rdata);
+							
+							var newPath = getPath(node);
+							var ofl = openFiles[oldPath];
+							if (ofl) {
+								delete openFiles[oldPath];
+								openFiles[newPath] = ofl;
+								ofl.name = newName;
+								ofl.path = newPath;
+								ofl.session.setMode(rdata.data.aceMode);
+								resyncVTab(ofl);
+							}
+						},
+						'error': function (xhr, status, err) {
+							node.text = oldName;
+							tree.redraw(true);
+							console.log(xhr);
+							alert('Couldn\'t rename '+ node.data.type +'! ('+xhr.responseText+')');
+						},
+					});
+				}
+			}
+			
+			function deleteFile(node, supress) {
+				if (supress || confirm('Are you sure you want to delete "'+node.text+'"?')) {
+					var path = getPath(node);
+					sendAuthedRequest(path, null, 'DELETE', {
+						'success': function (data) {
+							tree.delete_node(node);
+							if (openFiles[path]) closeFile(openFiles[path], true);
+						},
+						'error': function (xhr, stat, err) {
+							alert('Could not delete! ('+stat+')');
+						},
+					});
+				}
+			}
+			
+			function focusTab(tab) {
+				$("#tab-bar .tab").removeClass('focus');
+				tab.addClass('focus');
+				currentFile = openFiles[tab.data('file')];
+				$('#edit-box').removeClass('empty');
+				editor.setSession(currentFile.session);
+				editor.focus();
+			}
+			
+			$(window).on('beforeunload', function(e) {
+				for (key in openFiles) {
+					if (openFiles[key].dirty) {
+						return "Files have been modified. Are you sure you want to leave?";
+					}
+				}
+			});
+			
+			var tree = $("#sidebar .doc_nav").jstree({
+				'core': {
+					'check_callback': function(op, node, npar, npos) {
+						// operation can be 'create_node', 'rename_node', 'delete_node', 'move_node' or 'copy_node'
+						// in case of 'rename_node' node_position is filled with the new node name
+						return true;
+					},
+					'data': {
+						'url': function(node) {
+							if (node.id === '#') {
+								return "/ajax/computer/"	
+							} else {
+								return getPath(node);
+							}
+						},
+						'data': function (node) {
+							return getReqData();
+						},
+						'error': function(xhr, stat, err) {
+							if (xhr.status == 401) {
+								
+							}
+						}
+					}
+				},
+				'plugins': ['sort', 'state'],
+				'sort': function(ai, bi) {
+					var a = tree.get_node(ai), b = tree.get_node(bi);
+					if (a.data.type == b.data.type) {
+						return a.text < b.text ? -1 : 1;
+					} else if (a.data.type == 'folder') {
+						return -1;
+					} else {
+						return 1;
+					}
+				},
+				'state': {
+					'force_init': true,
+				},
+				
+			}).on('dblclick.jstree', function(evt){
+				var $n = $(evt.target).closest("li");
+				var node = tree.get_node($n);
+				if (node.data.type == "file") {
+					var node = tree.get_node($n);
+					var path = getPath(node);
+					if (openFiles[path] == null) {
+						openFile(path, node);
+					} else {
+						focusTab(openFiles[path].tab);
+					}
+				}
+				
+			}).on('edit_node.jstree', function(evt, data){
+				var node = data.node;
+				var $node = tree.get_node(node, true);
+				if (!data.cancelled) {
+					if (node.isnew) {
+						node.isnew = false;
+						
+						node.data.name = data.text;
+						sendAuthedRequest(getPath(node), {
+							'type': node.data.type,
+							'isnew': true,
+						}, 'POST', {
+							'success': function (data, status, xhr) {
+								applyInfo(node, data);
+							},
+							'error': function (xhr, status, err) {
+								tree.delete_node(node);
+								console.log(xhr);
+								alert('Couldn\'t create '+ node.data.type +'! ('+xhr.responseText+')');
+							},
+						});
+						
+					} else if (node.renaming) {
+						node.renaming = false;
+						renameFile(node, data.text, data.old);
+					}
+				} else if (node.isnew) {
+					tree.delete_node(node);
+				}
+			}).jstree();
+			
+			$.contextMenu({
+				'selector': '.jstree-node .jstree-anchor',
+				'build': function ($trig, e) {
+					var $node = $trig.closest('li');
+					var node = tree.get_node($node);
+					tree.deselect_all();
+					tree.select_node(node);
+					var opts = {};
+					var type = node.data.type;
+					if (type == 'folder' || type == 'computer') {
+						$.extend(opts, {
+							'newfolder': {name: 'New Folder'},
+							'newfile': {name: 'New File'},
+							'refresh': {name: 'Refresh'},
+						});
+					}
+					if (type == 'folder' || type == 'file') {
+						$.extend(opts, {
+							'rename': {name: 'Rename'},
+							'delete': {name: 'Delete'},
+						});
+					}
+					return {
+						'items': opts,
+					};
+				},
+				'callback': function(key, opts) {
+					var $node = $(this).closest('li');
+					var node = tree.get_node($node);
+					if (key == 'delete') {
+						deleteFile(node);
+					} else if (key == 'newfile' || key == 'newfolder') {
+						var isfile = key == 'newfile';
+						tree.create_node(node, {
+							'text': 'New ' + (isfile ? 'file' : 'folder'),
+							'icon': '/static/img/' + (isfile ? 'page_white.png' : 'folder.png'),
+							'children': false,
+							'data': {
+								'type': isfile ? 'file' : 'folder',
+							},
+						}, 'last', function (node) {
+							tree.edit(node);
+							node.isnew = true;
+						});
+					} else if (key == 'refresh') {
+						tree.load_node(node);
+						
+					} else if (key == 'rename') {
+						node.renaming = true;
+						tree.edit(node);
+					}
+				},
+			});
+			
+			$('.menu .refresh-all').on('click', function (e) {
+				e.preventDefault();
+				tree.refresh();
+			});
+			
+			$('.menu .redo').on('click', function (e) {
+				e.preventDefault();
+				editor.redo();
+			});
+			$('.menu .undo').on('click', function (e) {
+				e.preventDefault();
+				editor.undo();
+				var udm = currentFile.session.getUndoManager();
+				if (!udm.hasUndo()) {
+					markDirty(currentFile, false);
+				}
+			});
+			$('.menu .save').on('click', function (e) {
+				e.preventDefault();
+				saveFile(currentFile);
+			});
+			
+		{% endblock %}
+		});
+	</script>
+	{% endblock %}
+</head>
+<body>
+	{% block body %}
+	<div id="wrapper">
+		<div id="sidebar">
+			<div class="toolbar">
+				<div class="menu">
+					ComputerCraft Editor
+					<!--<a class="new_folder" style="background-image: url('/static/img/folder_add.png')"> New Folder</a>
+					<a class="new_file" style="background-image: url('/static/img/page_white_add.png')"> New File</a>-->
+				</div>
+			</div>
+			<div class="section-header toolbar">
+				File Tree:
+				<div class="menu" style="float: right; padding-right: 5px;">
+					<a class="refresh-all" style="background-image: url('/static/img/arrow_refresh.png')"> Refresh</a>
+				</div>
+			</div>
+			<div class="doc_nav">
+				
+			</div>
+		</div>
+		<div id="edit-area">
+			<div class="toolbar">
+				<div class="menu">
+					<a class="save" style="background-image: url('/static/img/disk.png')"> Save</a>
+					<a class="undo" style="background-image: url('/static/img/arrow_undo.png')"> Undo</a>
+					<a class="redo" style="background-image: url('/static/img/arrow_redo.png')"> Redo</a>
+				</div>
+			</div>
+			<div class="section-header">
+				<div id="tab-bar" class="inner-header">
+					
+				</div>
+			</div>
+			<div id='edit-box' class="empty">
+				<div id="editor"></div>
+			</div>
+		</div>
+	</div>
+	{% endblock %}
+	
+	<div id="templates" style="display: none;">
+		{% block templates %}
+			{% raw %}
+			<div class="tab">
+				<div class="tab">
+					<div class="tab-middle">
+						<div class="tab-title">{{ tabName }}</div>
+						<div class="tab-close"></div>
+					</div>
+					<div class="tab-left"></div>
+					<div class="tab-right"></div>
+				</div>
+			</div>
+			{% endraw %}
+		{% endblock templates %}
+	</div>
+</body>
+</html>
