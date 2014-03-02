@@ -10,6 +10,7 @@ aroot = os.path.dirname(__file__)
 psr = argparse.ArgumentParser(description='Start ComputerCraft WebIDE')
 psr.add_argument('path', help='Path to computers directory')
 psr.add_argument('-l', help='Host and port to listen on e.g. 0.0.0.0:8000', default='0.0.0.0:8000', metavar='address:port')
+psr.add_argument('--server', help='Specify what library to use as the server. See http://bottlepy.org/docs/dev/deployment.html#switching-the-server-backend', default='auto')
 args = psr.parse_args()
 ccdata_root = args.path
 
@@ -222,4 +223,4 @@ def static_files(fl):
 	return static_file(fl, root=os.path.join(aroot, "static"))
 	
 hp = re.match(r'(\d+\.\d+\.\d+\.\d+)?(?::(\d+))?', args.l)
-run(host=(hp.group(1) or '0.0.0.0'), port=(hp.group(2) or 8000), reloader=True)
+run(host=(hp.group(1) or '0.0.0.0'), port=(hp.group(2) or 8000), reloader=True, server=args.server)
