@@ -2,8 +2,8 @@
 import os, json, re, shutil, sys
 from hashlib import md5
 from bottle import route, run, static_file, request, response, get, error, HTTPError, HTTPResponse
-from jinja2 import Environment, FileSystemLoader
-tenv = Environment(loader=FileSystemLoader("templates"))
+from jinja2 import Environment, PackageLoader
+tenv = Environment(loader=PackageLoader(__name__, "templates"))
 
 aroot = os.path.dirname(__file__)
 ccdata_root = sys.argv[1]
