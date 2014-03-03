@@ -148,8 +148,8 @@
 			}
 			
 			function applyInfo(node, data) {
-				$.extend(true, node, data);
-				tree.redraw(true);
+				tree.delete_node(node);
+				tree.create_node(node.parent, $.extend(true, node, data));
 			}
 			
 			function renameFile(node, newName, oldName) {
@@ -298,6 +298,7 @@
 				} else if (node.isnew) {
 					tree.delete_node(node);
 				}
+				
 			}).jstree();
 			
 			$.contextMenu({
